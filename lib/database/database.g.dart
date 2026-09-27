@@ -599,9 +599,9 @@ class $TransactionsTable extends Transactions
   late final GeneratedColumn<int> projectId = GeneratedColumn<int>(
     'project_id',
     aliasedName,
-    true,
+    false,
     type: DriftSqlType.int,
-    requiredDuringInsert: false,
+    requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
       'REFERENCES projects (id)',
     ),
@@ -705,6 +705,8 @@ class $TransactionsTable extends Transactions
         _projectIdMeta,
         projectId.isAcceptableOrUnknown(data['project_id']!, _projectIdMeta),
       );
+    } else if (isInserting) {
+      context.missing(_projectIdMeta);
     }
     if (data.containsKey('description')) {
       context.handle(
@@ -767,7 +769,7 @@ class $TransactionsTable extends Transactions
       projectId: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}project_id'],
-      ),
+      )!,
       description: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}description'],
@@ -798,7 +800,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
   final double amount;
   final String type;
   final int categoryId;
-  final int? projectId;
+  final int projectId;
   final String? description;
   final DateTime date;
   final String? paymentMethod;
@@ -808,7 +810,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     required this.amount,
     required this.type,
     required this.categoryId,
-    this.projectId,
+    required this.projectId,
     this.description,
     required this.date,
     this.paymentMethod,
@@ -821,9 +823,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     map['amount'] = Variable<double>(amount);
     map['type'] = Variable<String>(type);
     map['category_id'] = Variable<int>(categoryId);
-    if (!nullToAbsent || projectId != null) {
-      map['project_id'] = Variable<int>(projectId);
-    }
+    map['project_id'] = Variable<int>(projectId);
     if (!nullToAbsent || description != null) {
       map['description'] = Variable<String>(description);
     }
@@ -843,9 +843,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
       amount: Value(amount),
       type: Value(type),
       categoryId: Value(categoryId),
-      projectId: projectId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(projectId),
+      projectId: Value(projectId),
       description: description == null && nullToAbsent
           ? const Value.absent()
           : Value(description),
@@ -869,7 +867,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
       amount: serializer.fromJson<double>(json['amount']),
       type: serializer.fromJson<String>(json['type']),
       categoryId: serializer.fromJson<int>(json['categoryId']),
-      projectId: serializer.fromJson<int?>(json['projectId']),
+      projectId: serializer.fromJson<int>(json['projectId']),
       description: serializer.fromJson<String?>(json['description']),
       date: serializer.fromJson<DateTime>(json['date']),
       paymentMethod: serializer.fromJson<String?>(json['paymentMethod']),
@@ -884,7 +882,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
       'amount': serializer.toJson<double>(amount),
       'type': serializer.toJson<String>(type),
       'categoryId': serializer.toJson<int>(categoryId),
-      'projectId': serializer.toJson<int?>(projectId),
+      'projectId': serializer.toJson<int>(projectId),
       'description': serializer.toJson<String?>(description),
       'date': serializer.toJson<DateTime>(date),
       'paymentMethod': serializer.toJson<String?>(paymentMethod),
@@ -897,7 +895,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     double? amount,
     String? type,
     int? categoryId,
-    Value<int?> projectId = const Value.absent(),
+    int? projectId,
     Value<String?> description = const Value.absent(),
     DateTime? date,
     Value<String?> paymentMethod = const Value.absent(),
@@ -907,7 +905,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     amount: amount ?? this.amount,
     type: type ?? this.type,
     categoryId: categoryId ?? this.categoryId,
-    projectId: projectId.present ? projectId.value : this.projectId,
+    projectId: projectId ?? this.projectId,
     description: description.present ? description.value : this.description,
     date: date ?? this.date,
     paymentMethod: paymentMethod.present
@@ -987,7 +985,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
   final Value<double> amount;
   final Value<String> type;
   final Value<int> categoryId;
-  final Value<int?> projectId;
+  final Value<int> projectId;
   final Value<String?> description;
   final Value<DateTime> date;
   final Value<String?> paymentMethod;
@@ -1008,14 +1006,15 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     required double amount,
     required String type,
     required int categoryId,
-    this.projectId = const Value.absent(),
+    required int projectId,
     this.description = const Value.absent(),
     this.date = const Value.absent(),
     this.paymentMethod = const Value.absent(),
     this.receiptImagePath = const Value.absent(),
   }) : amount = Value(amount),
        type = Value(type),
-       categoryId = Value(categoryId);
+       categoryId = Value(categoryId),
+       projectId = Value(projectId);
   static Insertable<Transaction> custom({
     Expression<int>? id,
     Expression<double>? amount,
@@ -1045,7 +1044,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     Value<double>? amount,
     Value<String>? type,
     Value<int>? categoryId,
-    Value<int?>? projectId,
+    Value<int>? projectId,
     Value<String?>? description,
     Value<DateTime>? date,
     Value<String?>? paymentMethod,
@@ -2398,7 +2397,7 @@ typedef $$TransactionsTableCreateCompanionBuilder =
       required double amount,
       required String type,
       required int categoryId,
-      Value<int?> projectId,
+      required int projectId,
       Value<String?> description,
       Value<DateTime> date,
       Value<String?> paymentMethod,
@@ -2410,7 +2409,7 @@ typedef $$TransactionsTableUpdateCompanionBuilder =
       Value<double> amount,
       Value<String> type,
       Value<int> categoryId,
-      Value<int?> projectId,
+      Value<int> projectId,
       Value<String?> description,
       Value<DateTime> date,
       Value<String?> paymentMethod,
@@ -2441,9 +2440,9 @@ final class $$TransactionsTableReferences
   static $ProjectsTable _projectIdTable(_$AppDatabase db) =>
       db.projects.createAlias('transactions__project_id__projects__id');
 
-  $$ProjectsTableProcessedTableManager? get projectId {
-    final $_column = $_itemColumn<int>('project_id');
-    if ($_column == null) return null;
+  $$ProjectsTableProcessedTableManager get projectId {
+    final $_column = $_itemColumn<int>('project_id')!;
+
     final manager = $$ProjectsTableTableManager(
       $_db,
       $_db.projects,
@@ -2753,7 +2752,7 @@ class $$TransactionsTableTableManager
                 Value<double> amount = const Value.absent(),
                 Value<String> type = const Value.absent(),
                 Value<int> categoryId = const Value.absent(),
-                Value<int?> projectId = const Value.absent(),
+                Value<int> projectId = const Value.absent(),
                 Value<String?> description = const Value.absent(),
                 Value<DateTime> date = const Value.absent(),
                 Value<String?> paymentMethod = const Value.absent(),
@@ -2775,7 +2774,7 @@ class $$TransactionsTableTableManager
                 required double amount,
                 required String type,
                 required int categoryId,
-                Value<int?> projectId = const Value.absent(),
+                required int projectId,
                 Value<String?> description = const Value.absent(),
                 Value<DateTime> date = const Value.absent(),
                 Value<String?> paymentMethod = const Value.absent(),

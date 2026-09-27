@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dashboard_screen.dart';
-import 'transactions_screen.dart';
 import 'projects_screen.dart';
 import 'reports_screen.dart';
 import 'settings_screen.dart';
-import 'add_transaction_screen.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -18,28 +16,15 @@ class _HomeShellState extends State<HomeShell> {
 
   final List<Widget> _screens = const [
     DashboardScreen(),
-    TransactionsScreen(),
     ProjectsScreen(),
     ReportsScreen(),
     SettingsScreen(),
   ];
 
-  void _openAddTransaction() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const AddTransactionScreen()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: _screens[_selectedIndex],
-      floatingActionButton: _selectedIndex == 1
-          ? FloatingActionButton(
-              onPressed: _openAddTransaction,
-              child: const Icon(Icons.add),
-            )
-          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) {
@@ -52,11 +37,6 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.dashboard_outlined),
             selectedIcon: Icon(Icons.dashboard),
             label: 'Dashboard',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.receipt_long_outlined),
-            selectedIcon: Icon(Icons.receipt_long),
-            label: 'Transactions',
           ),
           NavigationDestination(
             icon: Icon(Icons.folder_outlined),

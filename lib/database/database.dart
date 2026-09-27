@@ -23,8 +23,7 @@ class Transactions extends Table {
   RealColumn get amount => real()();
   TextColumn get type => text()(); // 'income' or 'expense'
   IntColumn get categoryId => integer().references(Categories, #id)();
-  IntColumn get projectId =>
-      integer().nullable().references(Projects, #id)();
+  IntColumn get projectId => integer().references(Projects, #id)();
   TextColumn get description => text().nullable()();
   DateTimeColumn get date => dateTime().withDefault(currentDateAndTime)();
   TextColumn get paymentMethod => text().nullable()();

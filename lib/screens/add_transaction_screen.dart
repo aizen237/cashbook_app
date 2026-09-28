@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../database/database.dart';
-import '../providers/category_provider.dart';
 import '../providers/transaction_provider.dart';
 
 class AddTransactionScreen extends ConsumerStatefulWidget {
@@ -19,7 +17,6 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
   final _descriptionController = TextEditingController();
 
   String _type = 'expense';
-  Category? _selectedCategory;
   DateTime _selectedDate = DateTime.now();
   String? _paymentMethod;
 
@@ -55,9 +52,9 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
       return;
     }
 
-    if (_selectedCategory == null) {
+    if (_descriptionController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a category')),
+        const SnackBar(content: Text('Enter a description')),
       );
       return;
     }
@@ -67,11 +64,8 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
       TransactionInput(
         amount: amount,
         type: _type,
-        categoryId: _selectedCategory!.id,
         projectId: widget.projectId,
-        description: _descriptionController.text.trim().isEmpty
-            ? null
-            : _descriptionController.text.trim(),
+        description: _descriptionController.text.trim(),
         date: _selectedDate,
         paymentMethod: _paymentMethod,
       ),
@@ -82,8 +76,6 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final categoriesAsync = ref.watch(categoriesProvider);
-
     return Scaffold(
       appBar: AppBar(title: const Text('Add Transaction')),
       body: SingleChildScrollView(
@@ -91,7 +83,6 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Income / Expense toggle
             SegmentedButton<String>(
               segments: const [
                 ButtonSegment(value: 'expense', label: Text('Expense')),
@@ -99,15 +90,11 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
               ],
               selected: {_type},
               onSelectionChanged: (selection) {
-                setState(() {
-                  _type = selection.first;
-                  _selectedCategory = null; // reset category on type change
-                });
+                setState(() => _type = selection.first);
               },
             ),
             const SizedBox(height: 20),
 
-            // Amount
             TextField(
               controller: _amountController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -120,34 +107,6 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Category dropdown
-            categoriesAsync.when(
-              data: (categories) {
-                final filtered =
-                categories.where((c) => c.type == _type).toList();
-                return DropdownButtonFormField<Category>(
-                  initialValue: _selectedCategory,
-                  decoration: const InputDecoration(
-                    labelText: 'Category',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: filtered
-                      .map((c) => DropdownMenuItem(
-                    value: c,
-                    child: Text(c.name),
-                  ))
-                      .toList(),
-                  onChanged: (value) {
-                    setState(() => _selectedCategory = value);
-                  },
-                );
-              },
-              loading: () => const CircularProgressIndicator(),
-              error: (e, _) => Text('Error loading categories: $e'),
-            ),
-            const SizedBox(height: 20),
-
-            // Date picker
             InkWell(
               onTap: _pickDate,
               child: InputDecorator(
@@ -162,7 +121,6 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Payment method
             DropdownButtonFormField<String>(
               initialValue: _paymentMethod,
               decoration: const InputDecoration(
@@ -178,11 +136,11 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Description
             TextField(
               controller: _descriptionController,
               decoration: const InputDecoration(
-                labelText: 'Description (optional)',
+                labelText: 'Description',
+                hintText: 'e.g. Cement bags, Client advance payment',
                 border: OutlineInputBorder(),
               ),
               maxLines: 2,

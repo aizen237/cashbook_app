@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../database/database.dart';
 import '../providers/project_provider.dart';
 import '../providers/transaction_provider.dart';
-import '../providers/category_provider.dart';
 import 'add_transaction_screen.dart';
 
 class ProjectDetailScreen extends ConsumerStatefulWidget {
@@ -18,16 +17,14 @@ class ProjectDetailScreen extends ConsumerStatefulWidget {
 
 class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
   String _searchQuery = '';
-  DateTime? _filterDate;
+  DateTime? _fromDate;
+  DateTime? _toDate;
 
   @override
   Widget build(BuildContext context) {
     final transactionsAsync =
     ref.watch(projectTransactionsProvider(widget.project.id));
     final totalsAsync = ref.watch(projectTotalsProvider(widget.project.id));
-    final categoriesAsync = ref.watch(categoriesProvider);
-    final categories = categoriesAsync.value ?? [];
-
     return Scaffold(
       appBar: AppBar(title: Text(widget.project.name)),
       floatingActionButton: FloatingActionButton(
@@ -90,26 +87,46 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton(
-                  icon: Icon(
-                    _filterDate == null
-                        ? Icons.calendar_today_outlined
-                        : Icons.calendar_today,
-                  ),
+                OutlinedButton(
                   onPressed: () async {
                     final picked = await showDatePicker(
                       context: context,
-                      initialDate: _filterDate ?? DateTime.now(),
+                      initialDate: _fromDate ?? DateTime.now(),
                       firstDate: DateTime(2020),
                       lastDate: DateTime(2100),
                     );
-                    setState(() => _filterDate = picked);
+                    if (picked != null) setState(() => _fromDate = picked);
                   },
+                  child: Text(
+                    _fromDate == null
+                        ? 'From'
+                        : '${_fromDate!.year}-${_fromDate!.month.toString().padLeft(2, '0')}-${_fromDate!.day.toString().padLeft(2, '0')}',
+                  ),
                 ),
-                if (_filterDate != null)
+                const SizedBox(width: 4),
+                OutlinedButton(
+                  onPressed: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: _toDate ?? DateTime.now(),
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) setState(() => _toDate = picked);
+                  },
+                  child: Text(
+                    _toDate == null
+                        ? 'To'
+                        : '${_toDate!.year}-${_toDate!.month.toString().padLeft(2, '0')}-${_toDate!.day.toString().padLeft(2, '0')}',
+                  ),
+                ),
+                if (_fromDate != null || _toDate != null)
                   IconButton(
                     icon: const Icon(Icons.clear),
-                    onPressed: () => setState(() => _filterDate = null),
+                    onPressed: () => setState(() {
+                      _fromDate = null;
+                      _toDate = null;
+                    }),
                   ),
               ],
             ),
@@ -130,13 +147,18 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                       .toList();
                 }
 
-                if (_filterDate != null) {
-                  filtered = filtered
-                      .where((t) =>
-                  t.date.year == _filterDate!.year &&
-                      t.date.month == _filterDate!.month &&
-                      t.date.day == _filterDate!.day)
-                      .toList();
+                if (_fromDate != null) {
+                  final from = DateTime(
+                      _fromDate!.year, _fromDate!.month, _fromDate!.day);
+                  filtered =
+                      filtered.where((t) => !t.date.isBefore(from)).toList();
+                }
+
+                if (_toDate != null) {
+                  final to = DateTime(_toDate!.year, _toDate!.month,
+                      _toDate!.day, 23, 59, 59);
+                  filtered =
+                      filtered.where((t) => !t.date.isAfter(to)).toList();
                 }
 
                 if (filtered.isEmpty) {
@@ -147,10 +169,6 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final t = filtered[index];
-                    final category = categories
-                        .where((c) => c.id == t.categoryId)
-                        .cast()
-                        .firstOrNull;
                     final isIncome = t.type == 'income';
 
                     return ListTile(
@@ -165,10 +183,9 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                           color: isIncome ? Colors.green : Colors.red,
                         ),
                       ),
-                      title: Text(category?.name ?? 'Unknown'),
+                      title: Text(t.description ?? 'No description'),
                       subtitle: Text(
-                        '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}'
-                            '${t.description != null ? ' • ${t.description}' : ''}',
+                        '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}',
                       ),
                       trailing: Text(
                         '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',

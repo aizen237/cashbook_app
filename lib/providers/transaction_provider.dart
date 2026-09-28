@@ -13,7 +13,6 @@ final transactionsProvider = StreamProvider<List<Transaction>>((ref) {
 class TransactionInput {
   final double amount;
   final String type; // 'income' or 'expense'
-  final int categoryId;
   final int projectId;
   final String? description;
   final DateTime date;
@@ -22,7 +21,6 @@ class TransactionInput {
   TransactionInput({
     required this.amount,
     required this.type,
-    required this.categoryId,
     required this.projectId,
     this.description,
     required this.date,
@@ -44,7 +42,6 @@ class TransactionActions {
       TransactionsCompanion.insert(
         amount: input.amount,
         type: input.type,
-        categoryId: input.categoryId,
         projectId: input.projectId,
         description: Value(input.description),
         date: Value(input.date),

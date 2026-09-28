@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/dashboard_provider.dart';
 import '../providers/transaction_provider.dart';
-import '../providers/category_provider.dart';
+
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -11,7 +11,7 @@ class DashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final dashboardAsync = ref.watch(dashboardProvider);
     final transactionsAsync = ref.watch(transactionsProvider);
-    final categoriesAsync = ref.watch(categoriesProvider);
+
 
     return Scaffold(
       appBar: AppBar(title: const Text('Dashboard')),
@@ -19,7 +19,7 @@ class DashboardScreen extends ConsumerWidget {
         data: (data) {
           final recentTransactions =
           (transactionsAsync.value ?? []).take(5).toList();
-          final categories = categoriesAsync.value ?? [];
+
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -103,10 +103,7 @@ class DashboardScreen extends ConsumerWidget {
                 )
               else
                 ...recentTransactions.map((t) {
-                  final category = categories
-                      .where((c) => c.id == t.categoryId)
-                      .cast()
-                      .firstOrNull;
+
                   final isIncome = t.type == 'income';
 
                   return ListTile(
@@ -120,7 +117,7 @@ class DashboardScreen extends ConsumerWidget {
                         color: isIncome ? Colors.green : Colors.red,
                       ),
                     ),
-                    title: Text(category?.name ?? 'Unknown'),
+                    title: Text(t.description ?? 'No description'),
                     subtitle: Text(
                       '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}',
                     ),

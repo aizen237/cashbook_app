@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../database/database.dart';
 import '../providers/transaction_provider.dart';
 
 class AddTransactionScreen extends ConsumerStatefulWidget {
   final int projectId;
+  final Transaction? existingTransaction;
 
-  const AddTransactionScreen({super.key, required this.projectId});
+  const AddTransactionScreen({
+    super.key,
+    required this.projectId,
+    this.existingTransaction,
+  });
 
   @override
   ConsumerState<AddTransactionScreen> createState() =>
@@ -13,14 +19,36 @@ class AddTransactionScreen extends ConsumerStatefulWidget {
 }
 
 class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
-  final _amountController = TextEditingController();
-  final _descriptionController = TextEditingController();
+  late final TextEditingController _amountController;
+  late final TextEditingController _descriptionController;
 
-  String _type = 'expense';
-  DateTime _selectedDate = DateTime.now();
+  late String _type;
+  late DateTime _selectedDate;
   String? _paymentMethod;
 
   final List<String> _paymentMethods = ['Cash', 'Bank Transfer', 'Mobile Money'];
+
+  bool get _isEditing => widget.existingTransaction != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existingTransaction;
+
+    _amountController = TextEditingController(
+      text: existing != null ? existing.amount.toString() : '',
+    );
+    _descriptionController = TextEditingController(
+      text: existing?.description ?? '',
+    );
+    _type = existing?.type ?? 'expense';
+    _selectedDate = existing?.date ?? DateTime.now();
+    _paymentMethod = (existing != null &&
+            existing.paymentMethod != null &&
+            _paymentMethods.contains(existing.paymentMethod))
+        ? existing.paymentMethod
+        : null;
+  }
 
   @override
   void dispose() {
@@ -59,17 +87,22 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
       return;
     }
 
-    final actions = ref.read(transactionActionsProvider);
-    await actions.addTransaction(
-      TransactionInput(
-        amount: amount,
-        type: _type,
-        projectId: widget.projectId,
-        description: _descriptionController.text.trim(),
-        date: _selectedDate,
-        paymentMethod: _paymentMethod,
-      ),
+    final input = TransactionInput(
+      amount: amount,
+      type: _type,
+      projectId: widget.existingTransaction?.projectId ?? widget.projectId,
+      description: _descriptionController.text.trim(),
+      date: _selectedDate,
+      paymentMethod: _paymentMethod,
     );
+
+    final actions = ref.read(transactionActionsProvider);
+
+    if (_isEditing) {
+      await actions.updateTransaction(widget.existingTransaction!.id, input);
+    } else {
+      await actions.addTransaction(input);
+    }
 
     if (mounted) Navigator.of(context).pop();
   }
@@ -77,7 +110,9 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Add Transaction')),
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Edit Transaction' : 'Add Transaction'),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -152,7 +187,10 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
               style: FilledButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
-              child: const Text('Save Transaction', style: TextStyle(fontSize: 16)),
+              child: Text(
+                _isEditing ? 'Update Transaction' : 'Save Transaction',
+                style: const TextStyle(fontSize: 16),
+              ),
             ),
           ],
         ),

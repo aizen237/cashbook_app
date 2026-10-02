@@ -50,6 +50,19 @@ class TransactionActions {
     );
   }
 
+  Future<void> updateTransaction(int id, TransactionInput input) async {
+    await (db.update(db.transactions)..where((t) => t.id.equals(id))).write(
+      TransactionsCompanion(
+        amount: Value(input.amount),
+        type: Value(input.type),
+        projectId: Value(input.projectId),
+        description: Value(input.description),
+        date: Value(input.date),
+        paymentMethod: Value(input.paymentMethod),
+      ),
+    );
+  }
+
   Future<void> deleteTransaction(int id) async {
     await (db.delete(db.transactions)..where((t) => t.id.equals(id))).go();
   }

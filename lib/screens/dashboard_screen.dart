@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/dashboard_provider.dart';
 import '../providers/transaction_provider.dart';
+import 'add_transaction_screen.dart';
 
 
 class DashboardScreen extends ConsumerWidget {
@@ -128,6 +129,16 @@ class DashboardScreen extends ConsumerWidget {
                         color: isIncome ? Colors.green : Colors.red,
                       ),
                     ),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => AddTransactionScreen(
+                            projectId: t.projectId,
+                            existingTransaction: t,
+                          ),
+                        ),
+                      );
+                    },
                   );
                 }),
             ],

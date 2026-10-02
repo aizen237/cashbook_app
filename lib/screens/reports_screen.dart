@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/report_provider.dart';
 import '../providers/project_provider.dart';
 import '../utils/pdf_report_generator.dart';
+import 'add_transaction_screen.dart';
 
 class ReportsScreen extends ConsumerStatefulWidget {
   const ReportsScreen({super.key});
@@ -233,6 +234,16 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                                     : Colors.red,
                               ),
                             ),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => AddTransactionScreen(
+                                    projectId: t.projectId,
+                                    existingTransaction: t,
+                                  ),
+                                ),
+                              );
+                            },
                           );
                         },
                       ),

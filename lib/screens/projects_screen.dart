@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../database/database.dart';
 import '../providers/project_provider.dart';
 import 'project_detail_screen.dart';
 
@@ -37,6 +38,99 @@ class ProjectsScreen extends ConsumerWidget {
     if (name != null && name.isNotEmpty) {
       await ref.read(projectActionsProvider).addProject(name);
     }
+  }
+
+  Future<void> _editProjectDialog(
+      BuildContext context, WidgetRef ref, Project project) async {
+    final controller = TextEditingController(text: project.name);
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Edit Project'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Project name',
+            hintText: 'e.g. Residential House',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+
+    if (newName != null && newName.isNotEmpty && newName != project.name) {
+      await ref
+          .read(projectActionsProvider)
+          .updateProject(project.id, newName);
+    }
+  }
+
+  Future<void> _confirmDeleteProject(
+      BuildContext context, WidgetRef ref, Project project) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete project?'),
+        content: const Text(
+          'Transactions linked to this project will keep their data but lose the project link.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await ref.read(projectActionsProvider).deleteProject(project.id);
+    }
+  }
+
+  void _showProjectOptions(
+      BuildContext context, WidgetRef ref, Project project) {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Edit Project'),
+              onTap: () {
+                Navigator.pop(context);
+                _editProjectDialog(context, ref, project);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: const Text('Delete Project',
+                  style: TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmDeleteProject(context, ref, project);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -99,32 +193,8 @@ class ProjectsScreen extends ConsumerWidget {
                       ),
                     );
                   },
-                  onLongPress: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (_) => AlertDialog(
-                        title: const Text('Delete project?'),
-                        content: const Text(
-                          'Transactions linked to this project will keep their data but lose the project link.',
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('Cancel'),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('Delete'),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (confirm == true) {
-                      await ref
-                          .read(projectActionsProvider)
-                          .deleteProject(project.id);
-                    }
-                  },
+                  onLongPress: () =>
+                      _showProjectOptions(context, ref, project),
                 ),
               );
             },

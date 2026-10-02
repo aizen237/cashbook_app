@@ -20,13 +20,122 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
   DateTime? _fromDate;
   DateTime? _toDate;
 
+  String _formatDateHeader(DateTime date) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(date.year, date.month, date.day);
+    final diff = today.difference(target).inDays;
+
+    final months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ];
+    final dateFormatted = '${date.day} ${months[date.month - 1]} ${date.year}';
+
+    if (diff == 0) {
+      return 'Today ($dateFormatted)';
+    } else if (diff == 1) {
+      return 'Yesterday ($dateFormatted)';
+    } else if (diff == -1) {
+      return 'Tomorrow ($dateFormatted)';
+    } else if (diff > 1 && diff <= 7) {
+      return '$diff days ago ($dateFormatted)';
+    } else {
+      return dateFormatted;
+    }
+  }
+
+  Widget _buildDateSeparator(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Divider(
+              color: Theme.of(context).colorScheme.outlineVariant,
+              thickness: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _editProjectDialog(
+      BuildContext context, String currentName) async {
+    final controller = TextEditingController(text: currentName);
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Edit Project'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Project name',
+            hintText: 'e.g. Residential House',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+
+    if (newName != null && newName.isNotEmpty && newName != currentName) {
+      await ref
+          .read(projectActionsProvider)
+          .updateProject(widget.project.id, newName);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final projectAsync = ref.watch(projectProvider(widget.project.id));
+    final currentProjectName =
+        projectAsync.value?.name ?? widget.project.name;
+
     final transactionsAsync =
-    ref.watch(projectTransactionsProvider(widget.project.id));
+        ref.watch(projectTransactionsProvider(widget.project.id));
     final totalsAsync = ref.watch(projectTotalsProvider(widget.project.id));
     return Scaffold(
-      appBar: AppBar(title: Text(widget.project.name)),
+      appBar: AppBar(
+        title: Text(currentProjectName),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'Edit Project',
+            onPressed: () => _editProjectDialog(context, currentProjectName),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
           Navigator.of(context).push(
@@ -165,10 +274,30 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                   return const Center(child: Text('No transactions found'));
                 }
 
+                // Group transactions by date
+                final Map<DateTime, List<Transaction>> groupedMap = {};
+                for (final t in filtered) {
+                  final dateKey =
+                      DateTime(t.date.year, t.date.month, t.date.day);
+                  groupedMap.putIfAbsent(dateKey, () => []).add(t);
+                }
+
+                final listItems = <dynamic>[];
+                for (final entry in groupedMap.entries) {
+                  listItems.add(entry.key); // DateTime
+                  listItems.addAll(entry.value); // Transactions
+                }
+
                 return ListView.builder(
-                  itemCount: filtered.length,
+                  itemCount: listItems.length,
                   itemBuilder: (context, index) {
-                    final t = filtered[index];
+                    final item = listItems[index];
+
+                    if (item is DateTime) {
+                      return _buildDateSeparator(_formatDateHeader(item));
+                    }
+
+                    final t = item as Transaction;
                     final isIncome = t.type == 'income';
 
                     return ListTile(
@@ -185,7 +314,10 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                       ),
                       title: Text(t.description ?? 'No description'),
                       subtitle: Text(
-                        '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}',
+                        t.paymentMethod != null &&
+                                t.paymentMethod!.trim().isNotEmpty
+                            ? t.paymentMethod!
+                            : 'No payment method',
                       ),
                       trailing: Text(
                         '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',
@@ -194,6 +326,16 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
                           color: isIncome ? Colors.green : Colors.red,
                         ),
                       ),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AddTransactionScreen(
+                              projectId: widget.project.id,
+                              existingTransaction: t,
+                            ),
+                          ),
+                        );
+                      },
                       onLongPress: () async {
                         final confirm = await showDialog<bool>(
                           context: context,

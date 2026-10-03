@@ -17,6 +17,7 @@ class TransactionInput {
   final String? description;
   final DateTime date;
   final String? paymentMethod;
+  final String? receiptImagePath;
 
   TransactionInput({
     required this.amount,
@@ -25,6 +26,7 @@ class TransactionInput {
     this.description,
     required this.date,
     this.paymentMethod,
+    this.receiptImagePath,
   });
 }
 
@@ -46,6 +48,7 @@ class TransactionActions {
         description: Value(input.description),
         date: Value(input.date),
         paymentMethod: Value(input.paymentMethod),
+        receiptImagePath: Value(input.receiptImagePath),
       ),
     );
   }
@@ -59,6 +62,7 @@ class TransactionActions {
         description: Value(input.description),
         date: Value(input.date),
         paymentMethod: Value(input.paymentMethod),
+        receiptImagePath: Value(input.receiptImagePath),
       ),
     );
   }

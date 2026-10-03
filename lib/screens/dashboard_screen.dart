@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/dashboard_provider.dart';
 import '../providers/transaction_provider.dart';
+import '../widgets/receipt_viewer.dart';
 import 'add_transaction_screen.dart';
 
 
@@ -122,12 +124,27 @@ class DashboardScreen extends ConsumerWidget {
                     subtitle: Text(
                       '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}',
                     ),
-                    trailing: Text(
-                      '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isIncome ? Colors.green : Colors.red,
-                      ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (t.receiptImagePath != null &&
+                            t.receiptImagePath!.isNotEmpty &&
+                            File(t.receiptImagePath!).existsSync())
+                          IconButton(
+                            icon: const Icon(Icons.receipt_long_outlined,
+                                color: Colors.blueAccent),
+                            tooltip: 'View Receipt',
+                            onPressed: () => ReceiptViewerDialog.show(
+                                context, t.receiptImagePath!),
+                          ),
+                        Text(
+                          '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: isIncome ? Colors.green : Colors.red,
+                          ),
+                        ),
+                      ],
                     ),
                     onTap: () {
                       Navigator.of(context).push(

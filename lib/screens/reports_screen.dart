@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/report_provider.dart';
 import '../providers/project_provider.dart';
 import '../utils/pdf_report_generator.dart';
+import '../widgets/receipt_viewer.dart';
 import 'add_transaction_screen.dart';
 
 class ReportsScreen extends ConsumerStatefulWidget {
@@ -225,14 +227,30 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                             ),
                             title: Text(t.description ?? 'No description'),
                             subtitle: Text(_formatDate(t.date)),
-                            trailing: Text(
-                              '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isIncome
-                                    ? Colors.green
-                                    : Colors.red,
-                              ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (t.receiptImagePath != null &&
+                                    t.receiptImagePath!.isNotEmpty &&
+                                    File(t.receiptImagePath!).existsSync())
+                                  IconButton(
+                                    icon: const Icon(
+                                        Icons.receipt_long_outlined,
+                                        color: Colors.blueAccent),
+                                    tooltip: 'View Receipt',
+                                    onPressed: () => ReceiptViewerDialog.show(
+                                        context, t.receiptImagePath!),
+                                  ),
+                                Text(
+                                  '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: isIncome
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                ),
+                              ],
                             ),
                             onTap: () {
                               Navigator.of(context).push(

@@ -10,7 +10,15 @@ Future<void> generateAndShareReportPdf({
   DateTime? toDate,
   String? descriptionQuery,
 }) async {
-  final doc = pw.Document();
+  final fontRegular = await PdfGoogleFonts.notoSansEthiopicRegular();
+  final fontBold = await PdfGoogleFonts.notoSansEthiopicBold();
+
+  final theme = pw.ThemeData.withFont(
+    base: fontRegular,
+    bold: fontBold,
+  );
+
+  final doc = pw.Document(theme: theme);
 
   String formatDate(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -35,16 +43,35 @@ Future<void> generateAndShareReportPdf({
         pw.Row(
           mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
           children: [
-            pw.Text('Total Income: ETB ${result.totalIncome.toStringAsFixed(2)}'),
-            pw.Text('Total Expense: ETB ${result.totalExpense.toStringAsFixed(2)}'),
-            pw.Text('Net: ETB ${result.netBalance.toStringAsFixed(2)}'),
+            pw.Text(
+              'Total Income: ETB ${result.totalIncome.toStringAsFixed(2)}',
+              style: pw.TextStyle(
+                fontWeight: pw.FontWeight.bold,
+                color: PdfColors.green800,
+              ),
+            ),
+            pw.Text(
+              'Total Expense: ETB ${result.totalExpense.toStringAsFixed(2)}',
+              style: pw.TextStyle(
+                fontWeight: pw.FontWeight.bold,
+                color: PdfColors.red800,
+              ),
+            ),
+            pw.Text(
+              'Net Balance: ETB ${result.netBalance.toStringAsFixed(2)}',
+              style: pw.TextStyle(
+                fontWeight: pw.FontWeight.bold,
+                color:
+                    result.netBalance >= 0 ? PdfColors.green800 : PdfColors.red800,
+              ),
+            ),
           ],
         ),
         pw.SizedBox(height: 16),
         pw.Divider(),
 
         pw.Table(
-          border: pw.TableBorder.all(width: 0.5),
+          border: pw.TableBorder.all(width: 0.5, color: PdfColors.grey400),
           columnWidths: const {
             0: pw.FlexColumnWidth(2),
             1: pw.FlexColumnWidth(3),
@@ -53,24 +80,67 @@ Future<void> generateAndShareReportPdf({
           },
           children: [
             pw.TableRow(
-              decoration: const pw.BoxDecoration(color: PdfColors.grey300),
+              decoration: const pw.BoxDecoration(color: PdfColors.grey200),
               children: [
-                pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('Date', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
-                pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('Description', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
-                pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
-                pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('Amount', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+                pw.Padding(
+                  padding: const pw.EdgeInsets.all(6),
+                  child: pw.Text('Date',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                ),
+                pw.Padding(
+                  padding: const pw.EdgeInsets.all(6),
+                  child: pw.Text('Description',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                ),
+                pw.Padding(
+                  padding: const pw.EdgeInsets.all(6),
+                  child: pw.Text('Type',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                ),
+                pw.Padding(
+                  padding: const pw.EdgeInsets.all(6),
+                  child: pw.Text('Amount',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                ),
               ],
             ),
-            ...result.transactions.map(
-                  (t) => pw.TableRow(
+            ...result.transactions.map((t) {
+              final isIncome = t.type == 'income';
+              final color = isIncome ? PdfColors.green800 : PdfColors.red800;
+
+              return pw.TableRow(
                 children: [
-                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(formatDate(t.date))),
-                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(t.description ?? '')),
-                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(t.type)),
-                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(t.amount.toStringAsFixed(2))),
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.all(6),
+                    child: pw.Text(formatDate(t.date)),
+                  ),
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.all(6),
+                    child: pw.Text(t.description ?? ''),
+                  ),
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.all(6),
+                    child: pw.Text(
+                      t.type.toUpperCase(),
+                      style: pw.TextStyle(
+                        fontWeight: pw.FontWeight.bold,
+                        color: color,
+                      ),
+                    ),
+                  ),
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.all(6),
+                    child: pw.Text(
+                      '${isIncome ? '+' : '-'}ETB ${t.amount.toStringAsFixed(2)}',
+                      style: pw.TextStyle(
+                        fontWeight: pw.FontWeight.bold,
+                        color: color,
+                      ),
+                    ),
+                  ),
                 ],
-              ),
-            ),
+              );
+            }),
           ],
         ),
       ],

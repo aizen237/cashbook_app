@@ -1,13 +1,17 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
 import '../database/database.dart';
+
+const int kMaxSupportedVersion = 2;
+const int kMaxZipFileCount = 10000;
+const int kMaxSingleUncompressedSizeBytes = 100 * 1024 * 1024; // 100 MB
+const int kMaxTotalUncompressedSizeBytes = 1 * 1024 * 1024 * 1024; // 1 GB
 
 class BackupResult {
   final bool success;
@@ -23,30 +27,65 @@ class _ReceiptToPack {
   _ReceiptToPack(this.zipPath, this.bytes);
 }
 
-/// Exports all database records and associated receipt images into a portable ZIP package.
+typedef ShareHandler = Future<ShareResult> Function(
+    List<XFile> files, {String? text});
+
+/// Exports database records and associated receipt images into a portable ZIP package.
 Future<BackupResult> exportBackup(
   AppDatabase db, {
   Directory? targetDir,
   bool shareAfterExport = true,
+  ShareHandler? shareHandler,
 }) async {
+  File? createdOutputFile;
   try {
     final projects = await db.select(db.projects).get();
     final transactions = await db.select(db.transactions).get();
 
     final receiptsToPack = <_ReceiptToPack>[];
     final jsonTransactions = <Map<String, dynamic>>[];
+    final seenZipPaths = <String>{};
 
     for (final t in transactions) {
       String? relativeReceiptPath;
 
       if (t.receiptImagePath != null && t.receiptImagePath!.trim().isNotEmpty) {
         final receiptFile = File(t.receiptImagePath!);
-        if (receiptFile.existsSync()) {
-          final fileName = p.basename(receiptFile.path);
-          relativeReceiptPath = 'receipts/$fileName';
-          final bytes = await receiptFile.readAsBytes();
-          receiptsToPack.add(_ReceiptToPack(relativeReceiptPath, bytes));
+
+        if (!receiptFile.existsSync()) {
+          return BackupResult(
+            false,
+            'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which is missing from disk.',
+          );
         }
+
+        List<int> bytes;
+        try {
+          bytes = await receiptFile.readAsBytes();
+          if (bytes.isEmpty) {
+            return BackupResult(
+              false,
+              'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which is empty (0 bytes).',
+            );
+          }
+        } catch (e) {
+          return BackupResult(
+            false,
+            'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which cannot be read ($e).',
+          );
+        }
+
+        final originalName = p.basename(receiptFile.path);
+        var candidateZipPath = 'receipts/tx_${t.id}_$originalName';
+        var counter = 1;
+        while (seenZipPaths.contains(candidateZipPath)) {
+          candidateZipPath = 'receipts/tx_${t.id}_${counter}_$originalName';
+          counter++;
+        }
+
+        seenZipPaths.add(candidateZipPath);
+        relativeReceiptPath = candidateZipPath;
+        receiptsToPack.add(_ReceiptToPack(relativeReceiptPath, bytes));
       }
 
       jsonTransactions.add({
@@ -65,10 +104,10 @@ Future<BackupResult> exportBackup(
       'version': 2,
       'exportedAt': DateTime.now().toIso8601String(),
       'projects': projects
-          .map((p) => {
-                'id': p.id,
-                'name': p.name,
-                'createdAt': p.createdAt.toIso8601String(),
+          .map((pRecord) => {
+                'id': pRecord.id,
+                'name': pRecord.name,
+                'createdAt': pRecord.createdAt.toIso8601String(),
               })
           .toList(),
       'transactions': jsonTransactions,
@@ -84,32 +123,52 @@ Future<BackupResult> exportBackup(
       archive.addFile(ArchiveFile(r.zipPath, r.bytes.length, r.bytes));
     }
 
-    final zipEncoder = ZipEncoder();
-    final zipBytes = zipEncoder.encode(archive);
+    final zipBytes = ZipEncoder().encode(archive);
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final fileName = 'cashbook_backup_$timestamp.zip';
 
-    String? outputFilePath;
-    if (targetDir != null) {
-      final outputFile = File(p.join(targetDir.path, fileName));
-      await outputFile.writeAsBytes(zipBytes);
-      outputFilePath = outputFile.path;
+    final outputFolder = targetDir ?? await _safeGetTemporaryDirectory();
+    if (!outputFolder.existsSync()) {
+      await outputFolder.create(recursive: true);
     }
 
+    createdOutputFile = File(p.join(outputFolder.path, fileName));
+    await createdOutputFile.writeAsBytes(zipBytes);
+
     if (shareAfterExport) {
-      await Printing.sharePdf(
-        bytes: Uint8List.fromList(zipBytes),
-        filename: fileName,
+      final xFile = XFile(
+        createdOutputFile.path,
+        mimeType: 'application/zip',
+        name: fileName,
       );
+
+      // ignore: deprecated_member_use
+      final handler = shareHandler ?? Share.shareXFiles;
+      final result = await handler(
+        [xFile],
+        text: 'Cashbook Backup Package',
+      );
+
+      if (result.status == ShareResultStatus.dismissed && targetDir == null) {
+        if (createdOutputFile.existsSync()) {
+          await createdOutputFile.delete();
+        }
+        return BackupResult(false, 'Backup share cancelled by user.');
+      }
     }
 
     return BackupResult(
       true,
       'Backup created successfully with ${projects.length} projects, ${transactions.length} transactions, and ${receiptsToPack.length} receipt images.',
-      filePath: outputFilePath,
+      filePath: createdOutputFile.path,
     );
   } catch (e) {
+    if (createdOutputFile != null && createdOutputFile.existsSync() && targetDir == null) {
+      try {
+        await createdOutputFile.delete();
+      } catch (_) {}
+    }
     return BackupResult(false, 'Export failed: $e');
   }
 }
@@ -119,6 +178,7 @@ Future<BackupResult> restoreBackup(
   AppDatabase db, {
   File? backupFile,
   Directory? targetStorageDir,
+  Directory? stagingParentDir,
 }) async {
   try {
     File? selectedFile = backupFile;
@@ -141,7 +201,8 @@ Future<BackupResult> restoreBackup(
 
     final fileBytes = await selectedFile.readAsBytes();
     if (fileBytes.isEmpty) {
-      return BackupResult(false, 'Validation failed: Selected backup file is empty.');
+      return BackupResult(
+          false, 'Validation failed: Selected backup file is empty (0 bytes).');
     }
 
     final extension = p.extension(selectedFile.path).toLowerCase();
@@ -150,16 +211,18 @@ Future<BackupResult> restoreBackup(
       return await _restoreFromLegacyJson(db, selectedFile);
     }
 
-    // Attempt ZIP restoration
     try {
       final archive = ZipDecoder().decodeBytes(fileBytes);
       return await _restoreFromZipArchive(
         db,
         archive,
         targetStorageDir: targetStorageDir,
+        stagingParentDir: stagingParentDir,
       );
     } catch (zipError) {
-      // Fallback: Check if file was actually a JSON file named differently
+      if (zipError is BackupResult) {
+        return zipError;
+      }
       try {
         final content = utf8.decode(fileBytes);
         final jsonMap = jsonDecode(content);
@@ -169,7 +232,9 @@ Future<BackupResult> restoreBackup(
       } catch (_) {}
 
       return BackupResult(
-          false, 'Validation failed: Invalid or corrupted ZIP archive ($zipError).');
+        false,
+        'Validation failed: Invalid or corrupted ZIP archive ($zipError).',
+      );
     }
   } catch (e) {
     return BackupResult(false, 'Restore failed: $e');
@@ -180,29 +245,81 @@ Future<BackupResult> _restoreFromZipArchive(
   AppDatabase db,
   Archive archive, {
   Directory? targetStorageDir,
+  Directory? stagingParentDir,
 }) async {
+  if (archive.length > kMaxZipFileCount) {
+    return BackupResult(
+      false,
+      'Validation failed: ZIP archive contains too many files (${archive.length} > $kMaxZipFileCount).',
+    );
+  }
+
   ArchiveFile? jsonArchiveFile;
-  final receiptEntries = <String, ArchiveFile>{};
+  final zipEntriesMap = <String, ArchiveFile>{};
+  final seenPaths = <String>{};
+  int totalUncompressedBytes = 0;
 
   for (final file in archive) {
-    final normPath = p.normalize(file.name).replaceAll('\\', '/');
+    final rawName = file.name;
+    final normPath = p.normalize(rawName).replaceAll('\\', '/');
+
+    // Zip Slip / Unsafe Archive Path Check
+    if (normPath.startsWith('/') ||
+        normPath.startsWith('../') ||
+        normPath.contains('/../') ||
+        normPath.contains(':\\') ||
+        normPath.contains(':/')) {
+      return BackupResult(
+        false,
+        'Validation failed: Unsafe archive path detected ("$rawName").',
+      );
+    }
+
+    if (seenPaths.contains(normPath)) {
+      return BackupResult(
+        false,
+        'Validation failed: Duplicate entry detected in ZIP archive ("$rawName").',
+      );
+    }
+    seenPaths.add(normPath);
+
+    final fileSize = file.size;
+    if (fileSize > kMaxSingleUncompressedSizeBytes) {
+      return BackupResult(
+        false,
+        'Validation failed: Single file "$rawName" in ZIP exceeds size limit ($fileSize bytes).',
+      );
+    }
+
+    totalUncompressedBytes += fileSize;
+    if (totalUncompressedBytes > kMaxTotalUncompressedSizeBytes) {
+      return BackupResult(
+        false,
+        'Validation failed: Total uncompressed size of ZIP archive exceeds limit.',
+      );
+    }
+
     if (normPath == 'backup.json' || p.basename(normPath) == 'backup.json') {
       jsonArchiveFile = file;
-    } else if (normPath.startsWith('receipts/') || file.name.contains('receipt')) {
-      receiptEntries[normPath] = file;
-      receiptEntries[p.basename(normPath)] = file;
+    } else {
+      zipEntriesMap[normPath] = file;
+      zipEntriesMap[p.basename(normPath)] = file;
     }
   }
 
   if (jsonArchiveFile == null) {
     return BackupResult(
-        false, 'Validation failed: backup.json is missing in the ZIP archive.');
+      false,
+      'Validation failed: backup.json is missing in the ZIP archive.',
+    );
   }
 
   final jsonContentBytes = jsonArchiveFile.content as List<int>;
   if (jsonContentBytes.isEmpty) {
     return BackupResult(
-        false, 'Validation failed: backup.json inside ZIP archive is empty.');
+      false,
+      'Validation failed: backup.json inside ZIP archive is empty.',
+    );
   }
 
   Map<String, dynamic> data;
@@ -210,12 +327,17 @@ Future<BackupResult> _restoreFromZipArchive(
     final jsonStr = utf8.decode(jsonContentBytes);
     final decoded = jsonDecode(jsonStr);
     if (decoded is! Map<String, dynamic>) {
-      return BackupResult(false, 'Validation failed: backup.json content is invalid.');
+      return BackupResult(
+        false,
+        'Validation failed: backup.json content is not a JSON object.',
+      );
     }
     data = decoded;
   } catch (e) {
     return BackupResult(
-        false, 'Validation failed: Unable to parse backup.json ($e).');
+      false,
+      'Validation failed: Unable to parse backup.json ($e).',
+    );
   }
 
   final validationResult = _validateBackupStructure(data);
@@ -226,14 +348,14 @@ Future<BackupResult> _restoreFromZipArchive(
   final projectsJson = data['projects'] as List;
   final transactionsJson = data['transactions'] as List;
 
-  // Validate that all referenced receipt images exist in ZIP archive and are non-empty
+  // Validate every referenced receipt image exists in ZIP and is non-empty
   for (final t in transactionsJson) {
     final receiptPath = t['receiptImagePath'] as String?;
     if (receiptPath != null && receiptPath.trim().isNotEmpty) {
       final normReceiptPath = p.normalize(receiptPath).replaceAll('\\', '/');
       final baseName = p.basename(normReceiptPath);
 
-      final entry = receiptEntries[normReceiptPath] ?? receiptEntries[baseName];
+      final entry = zipEntriesMap[normReceiptPath] ?? zipEntriesMap[baseName];
       if (entry == null) {
         return BackupResult(
           false,
@@ -250,85 +372,119 @@ Future<BackupResult> _restoreFromZipArchive(
     }
   }
 
-  // All validation passed safely. Get target storage directory for receipts.
-  Directory appDir;
-  if (targetStorageDir != null) {
-    appDir = targetStorageDir;
-  } else {
-    appDir = await getApplicationDocumentsDirectory();
-  }
+  // Stage receipts in a temporary staging directory first
+  Directory? stagingDir;
+  final newlyCreatedDestFiles = <File>[];
 
-  if (!appDir.existsSync()) {
-    await appDir.create(recursive: true);
-  }
+  try {
+    final stagingParent = stagingParentDir ?? await _safeGetTemporaryDirectory();
+    stagingDir = await stagingParent.createTemp('cashbook_restore_staging_');
 
-  // Extract receipt images to destination storage
-  final restoredReceiptPaths = <String, String>{};
-  for (final entry in receiptEntries.entries) {
-    final archiveFile = entry.value;
-    if (archiveFile.isFile && (archiveFile.content as List<int>).isNotEmpty) {
-      final fileName = p.basename(archiveFile.name);
-      final destFile = File(p.join(appDir.path, fileName));
-      await destFile.writeAsBytes(archiveFile.content as List<int>);
-      restoredReceiptPaths[archiveFile.name] = destFile.path;
-      restoredReceiptPaths[p.normalize(archiveFile.name).replaceAll('\\', '/')] =
-          destFile.path;
-      restoredReceiptPaths[fileName] = destFile.path;
-      restoredReceiptPaths['receipts/$fileName'] = destFile.path;
-    }
-  }
+    final stagedReceiptMap = <String, File>{};
 
-  // Database atomic swap inside transaction
-  await db.transaction(() async {
-    await db.delete(db.transactions).go();
-    await db.delete(db.projects).go();
-
-    final projectIdMap = <int, int>{};
-
-    for (final pJson in projectsJson) {
-      final oldId = pJson['id'] as int;
-      final newId = await db.into(db.projects).insert(
-            ProjectsCompanion.insert(
-              name: pJson['name'] as String,
-              createdAt: Value(DateTime.parse(pJson['createdAt'] as String)),
-            ),
-          );
-      projectIdMap[oldId] = newId;
+    for (final entry in zipEntriesMap.entries) {
+      final archiveFile = entry.value;
+      if (archiveFile.isFile && (archiveFile.content as List<int>).isNotEmpty) {
+        final fileName = p.basename(archiveFile.name);
+        final stagedFile = File(p.join(stagingDir.path, fileName));
+        await stagedFile.writeAsBytes(archiveFile.content as List<int>);
+        stagedReceiptMap[entry.key] = stagedFile;
+      }
     }
 
-    for (final tJson in transactionsJson) {
-      final oldProjectId = tJson['projectId'] as int;
-      final newProjectId = projectIdMap[oldProjectId];
-      if (newProjectId == null) continue;
+    final destDir =
+        targetStorageDir ?? await _safeGetApplicationDocumentsDirectory();
+    if (!destDir.existsSync()) {
+      await destDir.create(recursive: true);
+    }
 
-      String? newReceiptPath;
-      final relPath = tJson['receiptImagePath'] as String?;
-      if (relPath != null && relPath.trim().isNotEmpty) {
-        final normRel = p.normalize(relPath).replaceAll('\\', '/');
-        final baseName = p.basename(normRel);
-        newReceiptPath = restoredReceiptPaths[normRel] ??
-            restoredReceiptPaths[baseName] ??
-            restoredReceiptPaths[relPath];
+    // Copy staged receipts to destination with unique, collision-safe filenames
+    final finalReceiptPathsMap = <String, String>{};
+
+    for (final entry in stagedReceiptMap.entries) {
+      final key = entry.key;
+      final stagedFile = entry.value;
+
+      final originalFileName = p.basename(stagedFile.path);
+      final uniqueFileName = _generateUniqueFileName(destDir, originalFileName);
+      final destFile = File(p.join(destDir.path, uniqueFileName));
+
+      await stagedFile.copy(destFile.path);
+      newlyCreatedDestFiles.add(destFile);
+
+      finalReceiptPathsMap[key] = destFile.path;
+      finalReceiptPathsMap[originalFileName] = destFile.path;
+      finalReceiptPathsMap['receipts/$originalFileName'] = destFile.path;
+    }
+
+    // Database atomic swap inside transaction
+    await db.transaction(() async {
+      await db.delete(db.transactions).go();
+      await db.delete(db.projects).go();
+
+      final projectIdMap = <int, int>{};
+
+      for (final pJson in projectsJson) {
+        final oldId = pJson['id'] as int;
+        final newId = await db.into(db.projects).insert(
+              ProjectsCompanion.insert(
+                name: pJson['name'] as String,
+                createdAt: Value(DateTime.parse(pJson['createdAt'] as String)),
+              ),
+            );
+        projectIdMap[oldId] = newId;
       }
 
-      await db.into(db.transactions).insert(
-            TransactionsCompanion.insert(
-              amount: (tJson['amount'] as num).toDouble(),
-              type: tJson['type'] as String,
-              projectId: newProjectId,
-              description: Value(tJson['description'] as String?),
-              date: Value(DateTime.parse(tJson['date'] as String)),
-              paymentMethod: Value(tJson['paymentMethod'] as String?),
-              receiptImagePath: Value(newReceiptPath),
-            ),
-          );
-    }
-  });
+      for (final tJson in transactionsJson) {
+        final oldProjectId = tJson['projectId'] as int;
+        final newProjectId = projectIdMap[oldProjectId];
+        if (newProjectId == null) continue;
 
-  return BackupResult(
-    true,
-    'Restored ${projectsJson.length} projects, ${transactionsJson.length} transactions, and ${restoredReceiptPaths.length} receipt images successfully.',
-  );
+        String? newReceiptPath;
+        final relPath = tJson['receiptImagePath'] as String?;
+        if (relPath != null && relPath.trim().isNotEmpty) {
+          final normRel = p.normalize(relPath).replaceAll('\\', '/');
+          final baseName = p.basename(normRel);
+          newReceiptPath = finalReceiptPathsMap[normRel] ??
+              finalReceiptPathsMap[baseName] ??
+              finalReceiptPathsMap[relPath];
+        }
+
+        await db.into(db.transactions).insert(
+              TransactionsCompanion.insert(
+                amount: (tJson['amount'] as num).toDouble(),
+                type: tJson['type'] as String,
+                projectId: newProjectId,
+                description: Value(tJson['description'] as String?),
+                date: Value(DateTime.parse(tJson['date'] as String)),
+                paymentMethod: Value(tJson['paymentMethod'] as String?),
+                receiptImagePath: Value(newReceiptPath),
+              ),
+            );
+      }
+    });
+
+    return BackupResult(
+      true,
+      'Restored ${projectsJson.length} projects, ${transactionsJson.length} transactions, and ${newlyCreatedDestFiles.length} receipt images successfully.',
+    );
+  } catch (e) {
+    // Compensating cleanup: Delete any newly created destination files
+    for (final file in newlyCreatedDestFiles) {
+      if (file.existsSync()) {
+        try {
+          await file.delete();
+        } catch (_) {}
+      }
+    }
+    return BackupResult(false, 'Restore failed: $e');
+  } finally {
+    if (stagingDir != null && stagingDir.existsSync()) {
+      try {
+        await stagingDir.delete(recursive: true);
+      } catch (_) {}
+    }
+  }
 }
 
 Future<BackupResult> _restoreFromLegacyJson(
@@ -355,106 +511,161 @@ Future<BackupResult> _restoreFromLegacyJson(
   final projectsJson = data['projects'] as List;
   final transactionsJson = data['transactions'] as List;
 
-  await db.transaction(() async {
-    await db.delete(db.transactions).go();
-    await db.delete(db.projects).go();
+  try {
+    await db.transaction(() async {
+      await db.delete(db.transactions).go();
+      await db.delete(db.projects).go();
 
-    final projectIdMap = <int, int>{};
+      final projectIdMap = <int, int>{};
 
-    for (final pJson in projectsJson) {
-      final oldId = pJson['id'] as int;
-      final newId = await db.into(db.projects).insert(
-            ProjectsCompanion.insert(
-              name: pJson['name'] as String,
-              createdAt: Value(DateTime.parse(pJson['createdAt'] as String)),
-            ),
-          );
-      projectIdMap[oldId] = newId;
-    }
-
-    for (final tJson in transactionsJson) {
-      final oldProjectId = tJson['projectId'] as int;
-      final newProjectId = projectIdMap[oldProjectId];
-      if (newProjectId == null) continue;
-
-      String? validReceiptPath;
-      final origPath = tJson['receiptImagePath'] as String?;
-      if (origPath != null && origPath.trim().isNotEmpty) {
-        final existingFile = File(origPath);
-        if (existingFile.existsSync()) {
-          validReceiptPath = existingFile.path;
-        }
+      for (final pJson in projectsJson) {
+        final oldId = pJson['id'] as int;
+        final newId = await db.into(db.projects).insert(
+              ProjectsCompanion.insert(
+                name: pJson['name'] as String,
+                createdAt: Value(DateTime.parse(pJson['createdAt'] as String)),
+              ),
+            );
+        projectIdMap[oldId] = newId;
       }
 
-      await db.into(db.transactions).insert(
-            TransactionsCompanion.insert(
-              amount: (tJson['amount'] as num).toDouble(),
-              type: tJson['type'] as String,
-              projectId: newProjectId,
-              description: Value(tJson['description'] as String?),
-              date: Value(DateTime.parse(tJson['date'] as String)),
-              paymentMethod: Value(tJson['paymentMethod'] as String?),
-              receiptImagePath: Value(validReceiptPath),
-            ),
-          );
-    }
-  });
+      for (final tJson in transactionsJson) {
+        final oldProjectId = tJson['projectId'] as int;
+        final newProjectId = projectIdMap[oldProjectId];
+        if (newProjectId == null) continue;
 
-  return BackupResult(
-    true,
-    'Restored ${projectsJson.length} projects and ${transactionsJson.length} transactions from legacy JSON backup. Note: Receipt images cannot be recovered from legacy JSON backups.',
-  );
+        String? validReceiptPath;
+        final origPath = tJson['receiptImagePath'] as String?;
+        if (origPath != null && origPath.trim().isNotEmpty) {
+          final existingFile = File(origPath);
+          if (existingFile.existsSync()) {
+            validReceiptPath = existingFile.path;
+          }
+        }
+
+        await db.into(db.transactions).insert(
+              TransactionsCompanion.insert(
+                amount: (tJson['amount'] as num).toDouble(),
+                type: tJson['type'] as String,
+                projectId: newProjectId,
+                description: Value(tJson['description'] as String?),
+                date: Value(DateTime.parse(tJson['date'] as String)),
+                paymentMethod: Value(tJson['paymentMethod'] as String?),
+                receiptImagePath: Value(validReceiptPath),
+              ),
+            );
+      }
+    });
+
+    return BackupResult(
+      true,
+      'Restored ${projectsJson.length} projects and ${transactionsJson.length} transactions from legacy JSON backup. Note: Receipt images cannot be recovered from legacy JSON backups.',
+    );
+  } catch (e) {
+    return BackupResult(false, 'Restore failed: $e');
+  }
 }
 
 BackupResult _validateBackupStructure(Map<String, dynamic> data) {
   if (!data.containsKey('version') || data['version'] == null) {
     return BackupResult(
-        false, 'Validation failed: Missing version in backup data.');
+      false,
+      'Validation failed: Missing version in backup data.',
+    );
+  }
+
+  final version = data['version'];
+  if (version is! int || version < 1) {
+    return BackupResult(
+      false,
+      'Validation failed: Invalid backup version ($version).',
+    );
+  }
+
+  if (version > kMaxSupportedVersion) {
+    return BackupResult(
+      false,
+      'Validation failed: Unsupported backup version ($version). Please update the app to restore this backup.',
+    );
   }
 
   if (!data.containsKey('projects') || data['projects'] is! List) {
     return BackupResult(
-        false, 'Validation failed: Missing or invalid projects list.');
+      false,
+      'Validation failed: Missing or invalid projects list.',
+    );
   }
 
   if (!data.containsKey('transactions') || data['transactions'] is! List) {
     return BackupResult(
-        false, 'Validation failed: Missing or invalid transactions list.');
+      false,
+      'Validation failed: Missing or invalid transactions list.',
+    );
   }
 
   final projects = data['projects'] as List;
   final projectIds = <int>{};
 
-  for (final p in projects) {
-    if (p is! Map<String, dynamic>) {
+  for (final pRecord in projects) {
+    if (pRecord is! Map<String, dynamic>) {
       return BackupResult(
-          false, 'Validation failed: Corrupted project record structure.');
+        false,
+        'Validation failed: Corrupted project record structure.',
+      );
     }
-    final id = p['id'];
-    final name = p['name'];
-    final createdAt = p['createdAt'];
+    final id = pRecord['id'];
+    final name = pRecord['name'];
+    final createdAt = pRecord['createdAt'];
 
-    if (id is! int || name is! String || name.trim().isEmpty || createdAt is! String) {
+    if (id is! int || id <= 0) {
       return BackupResult(
-          false, 'Validation failed: Invalid project fields in backup.');
+        false,
+        'Validation failed: Project ID must be a positive integer.',
+      );
+    }
+
+    if (projectIds.contains(id)) {
+      return BackupResult(
+        false,
+        'Validation failed: Duplicate project ID found in backup (ID: $id).',
+      );
+    }
+
+    if (name is! String || name.trim().isEmpty) {
+      return BackupResult(
+        false,
+        'Validation failed: Project name cannot be empty.',
+      );
+    }
+
+    if (createdAt is! String) {
+      return BackupResult(
+        false,
+        'Validation failed: Missing project creation date.',
+      );
     }
 
     try {
       DateTime.parse(createdAt);
     } catch (_) {
       return BackupResult(
-          false, 'Validation failed: Invalid project creation date format.');
+        false,
+        'Validation failed: Invalid project creation date format.',
+      );
     }
 
     projectIds.add(id);
   }
 
   final transactions = data['transactions'] as List;
+  final transactionIds = <int>{};
 
   for (final t in transactions) {
     if (t is! Map<String, dynamic>) {
       return BackupResult(
-          false, 'Validation failed: Corrupted transaction record structure.');
+        false,
+        'Validation failed: Corrupted transaction record structure.',
+      );
     }
 
     final id = t['id'];
@@ -463,22 +674,39 @@ BackupResult _validateBackupStructure(Map<String, dynamic> data) {
     final projectId = t['projectId'];
     final date = t['date'];
 
-    if (id is! int ||
-        amount is! num ||
-        amount < 0 ||
-        type is! String ||
-        (type != 'income' && type != 'expense') ||
-        projectId is! int ||
-        date is! String) {
+    if (id is! int || id <= 0) {
       return BackupResult(
-          false, 'Validation failed: Invalid transaction fields in backup.');
+        false,
+        'Validation failed: Transaction ID must be a positive integer.',
+      );
     }
 
-    try {
-      DateTime.parse(date);
-    } catch (_) {
+    if (transactionIds.contains(id)) {
       return BackupResult(
-          false, 'Validation failed: Invalid transaction date format.');
+        false,
+        'Validation failed: Duplicate transaction ID found in backup (ID: $id).',
+      );
+    }
+
+    if (amount is! num || amount < 0 || !amount.toDouble().isFinite) {
+      return BackupResult(
+        false,
+        'Validation failed: Transaction amount must be a non-negative finite number.',
+      );
+    }
+
+    if (type is! String || (type != 'income' && type != 'expense')) {
+      return BackupResult(
+        false,
+        'Validation failed: Transaction type must be "income" or "expense".',
+      );
+    }
+
+    if (projectId is! int || projectId <= 0) {
+      return BackupResult(
+        false,
+        'Validation failed: Invalid project reference in transaction.',
+      );
     }
 
     if (!projectIds.contains(projectId)) {
@@ -487,7 +715,55 @@ BackupResult _validateBackupStructure(Map<String, dynamic> data) {
         'Validation failed: Transaction references non-existent project (ID: $projectId).',
       );
     }
+
+    if (date is! String) {
+      return BackupResult(
+        false,
+        'Validation failed: Missing transaction date.',
+      );
+    }
+
+    try {
+      DateTime.parse(date);
+    } catch (_) {
+      return BackupResult(
+        false,
+        'Validation failed: Invalid transaction date format.',
+      );
+    }
+
+    transactionIds.add(id);
   }
 
   return BackupResult(true, 'Validation successful.');
+}
+
+String _generateUniqueFileName(Directory dir, String originalFileName) {
+  final nameWithoutExt = p.basenameWithoutExtension(originalFileName);
+  final ext = p.extension(originalFileName);
+
+  var candidateName = originalFileName;
+  var counter = 1;
+
+  while (File(p.join(dir.path, candidateName)).existsSync()) {
+    candidateName = '${nameWithoutExt}_restored_$counter$ext';
+    counter++;
+  }
+  return candidateName;
+}
+
+Future<Directory> _safeGetApplicationDocumentsDirectory() async {
+  try {
+    return await getApplicationDocumentsDirectory();
+  } catch (_) {
+    return Directory.systemTemp;
+  }
+}
+
+Future<Directory> _safeGetTemporaryDirectory() async {
+  try {
+    return await getTemporaryDirectory();
+  } catch (_) {
+    return Directory.systemTemp;
+  }
 }

@@ -531,18 +531,18 @@ void main() {
     final zipBytes = ZipEncoder().encode(archive);
     final zipFile = File(p.join(tempDir.path, 'controlled_fail.zip'))..writeAsBytesSync(zipBytes);
 
-    // Controlled failure injected right after receipt extraction before DB transaction
+    // Controlled failure injected INSIDE the db.transaction callback after records were modified
     final restoreRes = await restoreBackup(
       db,
       backupFile: zipFile,
       targetStorageDir: initialStorage,
-      onBeforeDbTransaction: () async {
-        throw Exception('Simulated Controlled Database Transaction Failure');
+      onInsideDbTransaction: () async {
+        throw Exception('Simulated Mid-Transaction Database Failure');
       },
     );
 
     expect(restoreRes.success, isFalse);
-    expect(restoreRes.message, contains('Simulated Controlled Database Transaction Failure'));
+    expect(restoreRes.message, contains('Simulated Mid-Transaction Database Failure'));
 
     // Verify pre-existing receipt file remains untouched
     expect(preExistingFile.existsSync(), isTrue);

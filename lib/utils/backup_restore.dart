@@ -189,6 +189,7 @@ Future<BackupResult> restoreBackup(
   Directory? targetStorageDir,
   Directory? stagingParentDir,
   Future<void> Function()? onBeforeDbTransaction,
+  Future<void> Function()? onInsideDbTransaction,
 }) async {
   try {
     File? selectedFile = backupFile;
@@ -229,6 +230,7 @@ Future<BackupResult> restoreBackup(
         targetStorageDir: targetStorageDir,
         stagingParentDir: stagingParentDir,
         onBeforeDbTransaction: onBeforeDbTransaction,
+        onInsideDbTransaction: onInsideDbTransaction,
       );
     } catch (zipError) {
       if (zipError is BackupResult) {
@@ -291,6 +293,7 @@ Future<BackupResult> _restoreFromZipArchive(
   Directory? targetStorageDir,
   Directory? stagingParentDir,
   Future<void> Function()? onBeforeDbTransaction,
+  Future<void> Function()? onInsideDbTransaction,
 }) async {
   if (archive.length > kMaxZipFileCount) {
     return BackupResult(
@@ -491,6 +494,10 @@ Future<BackupResult> _restoreFromZipArchive(
               ),
             );
         projectIdMap[oldId] = newId;
+      }
+
+      if (onInsideDbTransaction != null) {
+        await onInsideDbTransaction();
       }
 
       for (final tJson in transactionsJson) {

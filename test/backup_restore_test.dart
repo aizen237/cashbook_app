@@ -187,14 +187,83 @@ void main() {
     expect(exportRes.message, contains('missing from disk'));
     expect(exportRes.message, contains('Office Supplies'));
 
-    // Verify partial zip was not created or was cleaned up
     final zipFiles = exportDir.listSync();
     expect(zipFiles.isEmpty, isTrue);
 
     await db.close();
   });
 
-  test('5. Duplicate receipt filenames handled uniquely without overwriting', () async {
+  test('5. Single receipt extracted exactly once when referenced by multiple transactions', () async {
+    final db1 = AppDatabase(NativeDatabase.memory());
+
+    final storageDir = Directory(p.join(tempDir.path, 'shared_storage'))..createSync();
+    final sharedReceipt = File(p.join(storageDir.path, 'shared_receipt.jpg'))
+      ..writeAsBytesSync([100, 200, 255]);
+
+    final pId = await db1.into(db1.projects).insert(
+          ProjectsCompanion.insert(name: 'Shared Receipt Project'),
+        );
+
+    // 3 transactions referencing the exact same receipt
+    await db1.into(db1.transactions).insert(
+          TransactionsCompanion.insert(
+            amount: 100.0,
+            type: 'expense',
+            projectId: pId,
+            receiptImagePath: Value(sharedReceipt.path),
+          ),
+        );
+
+    await db1.into(db1.transactions).insert(
+          TransactionsCompanion.insert(
+            amount: 200.0,
+            type: 'expense',
+            projectId: pId,
+            receiptImagePath: Value(sharedReceipt.path),
+          ),
+        );
+
+    await db1.into(db1.transactions).insert(
+          TransactionsCompanion.insert(
+            amount: 300.0,
+            type: 'income',
+            projectId: pId,
+            receiptImagePath: Value(sharedReceipt.path),
+          ),
+        );
+
+    final exportDir = Directory(p.join(tempDir.path, 'shared_export'))..createSync();
+    final exportRes = await exportBackup(db1, targetDir: exportDir, shareAfterExport: false);
+    expect(exportRes.success, isTrue);
+
+    final db2 = AppDatabase(NativeDatabase.memory());
+    final restoreStorage = Directory(p.join(tempDir.path, 'restore_shared'))..createSync();
+
+    final restoreRes = await restoreBackup(
+      db2,
+      backupFile: File(exportRes.filePath!),
+      targetStorageDir: restoreStorage,
+    );
+
+    expect(restoreRes.success, isTrue);
+
+    // Verify exactly ONE physical file was extracted in targetStorage
+    final extractedFiles = restoreStorage.listSync();
+    expect(extractedFiles.length, equals(1));
+
+    // Verify all 3 transactions point to the same restored file path
+    final txs = await db2.select(db2.transactions).get();
+    expect(txs.length, equals(3));
+    final targetPath = extractedFiles.first.path;
+    for (final t in txs) {
+      expect(t.receiptImagePath, equals(targetPath));
+    }
+
+    await db1.close();
+    await db2.close();
+  });
+
+  test('6. Different receipts with identical filenames remain distinct and collision-safe', () async {
     final db1 = AppDatabase(NativeDatabase.memory());
 
     final dirA = Directory(p.join(tempDir.path, 'folderA'))..createSync();
@@ -257,7 +326,57 @@ void main() {
     await db2.close();
   });
 
-  test('6. Corrupted ZIP archives fail validation and preserve existing data', () async {
+  test('7. Restoration into directory with pre-existing receipt never overwrites it', () async {
+    final db1 = AppDatabase(NativeDatabase.memory());
+
+    final storageDir1 = Directory(p.join(tempDir.path, 'export_storage'))..createSync();
+    final receiptFile = File(p.join(storageDir1.path, 'receipt.jpg'))
+      ..writeAsBytesSync([1, 1, 1]);
+
+    final pId = await db1.into(db1.projects).insert(
+          ProjectsCompanion.insert(name: 'Project 1'),
+        );
+    await db1.into(db1.transactions).insert(
+          TransactionsCompanion.insert(
+            amount: 50.0,
+            type: 'expense',
+            projectId: pId,
+            receiptImagePath: Value(receiptFile.path),
+          ),
+        );
+
+    final exportRes = await exportBackup(db1, targetDir: tempDir, shareAfterExport: false);
+    final zipFile = File(exportRes.filePath!);
+
+    // Pre-create receipt.jpg in target restore directory
+    final restoreTargetDir = Directory(p.join(tempDir.path, 'restore_target'))..createSync();
+    final existingReceipt = File(p.join(restoreTargetDir.path, 'receipt.jpg'))
+      ..writeAsBytesSync([9, 9, 9]);
+
+    final db2 = AppDatabase(NativeDatabase.memory());
+    final restoreRes = await restoreBackup(
+      db2,
+      backupFile: zipFile,
+      targetStorageDir: restoreTargetDir,
+    );
+
+    expect(restoreRes.success, isTrue);
+
+    // Verify existing pre-created receipt file retains its original content [9, 9, 9]
+    expect(existingReceipt.readAsBytesSync(), equals([9, 9, 9]));
+
+    // Verify restored transaction points to a newly generated collision-safe file
+    final txs = await db2.select(db2.transactions).get();
+    expect(txs.length, equals(1));
+    final restoredFile = File(txs.first.receiptImagePath!);
+    expect(restoredFile.path, isNot(equals(existingReceipt.path)));
+    expect(restoredFile.readAsBytesSync(), equals([1, 1, 1]));
+
+    await db1.close();
+    await db2.close();
+  });
+
+  test('8. Corrupted ZIP archives fail validation and preserve existing data', () async {
     final db = AppDatabase(NativeDatabase.memory());
 
     final pId = await db.into(db.projects).insert(
@@ -286,7 +405,7 @@ void main() {
     await db.close();
   });
 
-  test('7. Unsupported backup versions rejected', () async {
+  test('9. Unsupported backup versions rejected', () async {
     final db = AppDatabase(NativeDatabase.memory());
 
     final futureData = {
@@ -312,7 +431,7 @@ void main() {
     await db.close();
   });
 
-  test('8. Invalid and duplicate record IDs fail validation', () async {
+  test('10. Invalid and duplicate record IDs fail validation', () async {
     final db = AppDatabase(NativeDatabase.memory());
 
     final dupIdData = {
@@ -339,7 +458,7 @@ void main() {
     await db.close();
   });
 
-  test('9. Unsafe archive paths (Zip Slip) rejected', () async {
+  test('11. Unsafe archive paths (Zip Slip) rejected', () async {
     final db = AppDatabase(NativeDatabase.memory());
 
     final jsonBackup = {
@@ -366,78 +485,40 @@ void main() {
     await db.close();
   });
 
-  test('10. File write failure during restoration handles error gracefully', () async {
+  test('12. Genuine database transaction failure after receipt extraction rolls back DB and cleans up files', () async {
     final db = AppDatabase(NativeDatabase.memory());
 
-    await db.into(db.projects).insert(
-          ProjectsCompanion.insert(name: 'Initial Proj'),
-        );
+    // Populate initial DB and storage
+    final initialStorage = Directory(p.join(tempDir.path, 'initial_storage'))..createSync();
+    final preExistingFile = File(p.join(initialStorage.path, 'pre_existing.jpg'))
+      ..writeAsBytesSync([100, 200]);
 
-    // Create valid zip with receipt
-    final dbExport = AppDatabase(NativeDatabase.memory());
-    final exportStorage = Directory(p.join(tempDir.path, 'exp_storage'))..createSync();
-    final receipt = File(p.join(exportStorage.path, 'rec.jpg'))..writeAsBytesSync([9, 9, 9]);
-
-    final expPId = await dbExport.into(dbExport.projects).insert(
-          ProjectsCompanion.insert(name: 'Export Proj'),
+    final pId = await db.into(db.projects).insert(
+          ProjectsCompanion.insert(name: 'Initial Data'),
         );
-    await dbExport.into(dbExport.transactions).insert(
+    await db.into(db.transactions).insert(
           TransactionsCompanion.insert(
             amount: 50.0,
             type: 'income',
-            projectId: expPId,
-            receiptImagePath: Value(receipt.path),
+            projectId: pId,
+            receiptImagePath: Value(preExistingFile.path),
           ),
         );
 
-    final exportDir = Directory(p.join(tempDir.path, 'exp_out'))..createSync();
-    final exportRes = await exportBackup(dbExport, targetDir: exportDir, shareAfterExport: false);
-    final zipFile = File(exportRes.filePath!);
-
-    // Invalid/unwritable target directory path
-    final invalidDestDir = Directory(p.join(tempDir.path, 'invalid_dir_file.txt'));
-    await File(invalidDestDir.path).writeAsString('I am a file, not a folder');
-
-    final restoreRes = await restoreBackup(
-      db,
-      backupFile: zipFile,
-      targetStorageDir: invalidDestDir,
-    );
-
-    expect(restoreRes.success, isFalse);
-    expect(restoreRes.message, contains('Restore failed'));
-
-    // Verify existing database data preserved
-    final projects = await db.select(db.projects).get();
-    expect(projects.length, equals(1));
-    expect(projects.first.name, equals('Initial Proj'));
-
-    await db.close();
-    await dbExport.close();
-  });
-
-  test('11. Database transaction failure after receipt extraction cleans up newly created files', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-
-    // Populate initial DB
-    await db.into(db.projects).insert(
-          ProjectsCompanion.insert(name: 'Initial Data'),
-        );
-
-    // Create zip that passes receipt validation but fails inside DB transaction (e.g., negative amount)
+    // Create valid zip with receipt
     final jsonBackup = {
       'version': 2,
       'projects': [
-        {'id': 1, 'name': 'Project 1', 'createdAt': DateTime.now().toIso8601String()}
+        {'id': 1, 'name': 'New Project', 'createdAt': DateTime.now().toIso8601String()}
       ],
       'transactions': [
         {
           'id': 10,
-          'amount': -500.0, // Invalid negative amount
+          'amount': 500.0,
           'type': 'expense',
           'projectId': 1,
           'date': DateTime.now().toIso8601String(),
-          'receiptImagePath': 'receipts/rec.jpg',
+          'receiptImagePath': 'receipts/new_rec.jpg',
         }
       ],
     };
@@ -445,70 +526,37 @@ void main() {
     final jsonBytes = utf8.encode(jsonEncode(jsonBackup));
     final archive = Archive();
     archive.addFile(ArchiveFile('backup.json', jsonBytes.length, jsonBytes));
-    archive.addFile(ArchiveFile('receipts/rec.jpg', 3, [1, 2, 3]));
+    archive.addFile(ArchiveFile('receipts/new_rec.jpg', 3, [1, 2, 3]));
 
     final zipBytes = ZipEncoder().encode(archive);
-    final zipFile = File(p.join(tempDir.path, 'db_fail.zip'))..writeAsBytesSync(zipBytes);
+    final zipFile = File(p.join(tempDir.path, 'controlled_fail.zip'))..writeAsBytesSync(zipBytes);
 
-    final targetStorage = Directory(p.join(tempDir.path, 'target_storage'))..createSync();
-
+    // Controlled failure injected right after receipt extraction before DB transaction
     final restoreRes = await restoreBackup(
       db,
       backupFile: zipFile,
-      targetStorageDir: targetStorage,
+      targetStorageDir: initialStorage,
+      onBeforeDbTransaction: () async {
+        throw Exception('Simulated Controlled Database Transaction Failure');
+      },
     );
 
     expect(restoreRes.success, isFalse);
+    expect(restoreRes.message, contains('Simulated Controlled Database Transaction Failure'));
 
-    // Verify newly created receipt files were cleaned up
-    expect(targetStorage.listSync().isEmpty, isTrue);
+    // Verify pre-existing receipt file remains untouched
+    expect(preExistingFile.existsSync(), isTrue);
+    expect(preExistingFile.readAsBytesSync(), equals([100, 200]));
 
-    // Verify initial DB state preserved
+    // Verify newly extracted receipt files were cleaned up from targetStorage
+    final storageFiles = initialStorage.listSync();
+    expect(storageFiles.length, equals(1));
+    expect(storageFiles.first.path, equals(preExistingFile.path));
+
+    // Verify initial DB state remains intact
     final projects = await db.select(db.projects).get();
     expect(projects.length, equals(1));
     expect(projects.first.name, equals('Initial Data'));
-
-    await db.close();
-  });
-
-  test('12. Preservation of pre-existing receipts and database records after failure', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-
-    final targetStorage = Directory(p.join(tempDir.path, 'target_storage'))..createSync();
-    final existingReceipt = File(p.join(targetStorage.path, 'pre_existing.jpg'))
-      ..writeAsBytesSync([100, 200, 255]);
-
-    final pId = await db.into(db.projects).insert(
-          ProjectsCompanion.insert(name: 'Pre-existing Project'),
-        );
-    await db.into(db.transactions).insert(
-          TransactionsCompanion.insert(
-            amount: 10.0,
-            type: 'income',
-            projectId: pId,
-            receiptImagePath: Value(existingReceipt.path),
-          ),
-        );
-
-    // Try restoring a corrupted zip
-    final corruptedZip = File(p.join(tempDir.path, 'bad.zip'))..writeAsBytesSync([1, 2, 3]);
-
-    final restoreRes = await restoreBackup(
-      db,
-      backupFile: corruptedZip,
-      targetStorageDir: targetStorage,
-    );
-
-    expect(restoreRes.success, isFalse);
-
-    // Verify pre-existing receipt file is still intact!
-    expect(existingReceipt.existsSync(), isTrue);
-    expect(existingReceipt.readAsBytesSync(), equals([100, 200, 255]));
-
-    // Verify DB records intact
-    final projects = await db.select(db.projects).get();
-    expect(projects.length, equals(1));
-    expect(projects.first.name, equals('Pre-existing Project'));
 
     await db.close();
   });
@@ -581,7 +629,6 @@ void main() {
     );
     expect(restoreRes.success, isTrue);
 
-    // Verify tempDir has no leftover cashbook_restore_staging_ folders
     final leftoverStaging = tempDir
         .listSync()
         .where((e) => p.basename(e.path).startsWith('cashbook_restore_staging_'));

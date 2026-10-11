@@ -45,12 +45,14 @@ Future<BackupResult> exportBackup(
     final receiptsToPack = <_ReceiptToPack>[];
     final jsonTransactions = <Map<String, dynamic>>[];
     final seenZipPaths = <String>{};
+    final localPathToZipPath = <String, String>{};
 
     for (final t in transactions) {
       String? relativeReceiptPath;
 
       if (t.receiptImagePath != null && t.receiptImagePath!.trim().isNotEmpty) {
         final receiptFile = File(t.receiptImagePath!);
+        final canonicalLocalPath = p.canonicalize(receiptFile.path);
 
         if (!receiptFile.existsSync()) {
           return BackupResult(
@@ -59,33 +61,40 @@ Future<BackupResult> exportBackup(
           );
         }
 
-        List<int> bytes;
-        try {
-          bytes = await receiptFile.readAsBytes();
-          if (bytes.isEmpty) {
+        if (localPathToZipPath.containsKey(canonicalLocalPath)) {
+          relativeReceiptPath = localPathToZipPath[canonicalLocalPath];
+        } else {
+          List<int> bytes;
+          try {
+            bytes = await receiptFile.readAsBytes();
+            if (bytes.isEmpty) {
+              return BackupResult(
+                false,
+                'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which is empty (0 bytes).',
+              );
+            }
+          } catch (e) {
             return BackupResult(
               false,
-              'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which is empty (0 bytes).',
+              'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which cannot be read ($e).',
             );
           }
-        } catch (e) {
-          return BackupResult(
-            false,
-            'Export failed: Transaction ID ${t.id} ("${t.description ?? 'No description'}") references receipt image "${t.receiptImagePath}" which cannot be read ($e).',
-          );
-        }
 
-        final originalName = p.basename(receiptFile.path);
-        var candidateZipPath = 'receipts/tx_${t.id}_$originalName';
-        var counter = 1;
-        while (seenZipPaths.contains(candidateZipPath)) {
-          candidateZipPath = 'receipts/tx_${t.id}_${counter}_$originalName';
-          counter++;
-        }
+          final originalName = p.basename(receiptFile.path);
+          var candidateZipPath = 'receipts/$originalName';
+          var counter = 1;
+          while (seenZipPaths.contains(candidateZipPath)) {
+            final base = p.basenameWithoutExtension(originalName);
+            final ext = p.extension(originalName);
+            candidateZipPath = 'receipts/${base}_$counter$ext';
+            counter++;
+          }
 
-        seenZipPaths.add(candidateZipPath);
-        relativeReceiptPath = candidateZipPath;
-        receiptsToPack.add(_ReceiptToPack(relativeReceiptPath, bytes));
+          seenZipPaths.add(candidateZipPath);
+          localPathToZipPath[canonicalLocalPath] = candidateZipPath;
+          relativeReceiptPath = candidateZipPath;
+          receiptsToPack.add(_ReceiptToPack(relativeReceiptPath, bytes));
+        }
       }
 
       jsonTransactions.add({
@@ -179,6 +188,7 @@ Future<BackupResult> restoreBackup(
   File? backupFile,
   Directory? targetStorageDir,
   Directory? stagingParentDir,
+  Future<void> Function()? onBeforeDbTransaction,
 }) async {
   try {
     File? selectedFile = backupFile;
@@ -218,6 +228,7 @@ Future<BackupResult> restoreBackup(
         archive,
         targetStorageDir: targetStorageDir,
         stagingParentDir: stagingParentDir,
+        onBeforeDbTransaction: onBeforeDbTransaction,
       );
     } catch (zipError) {
       if (zipError is BackupResult) {
@@ -241,11 +252,45 @@ Future<BackupResult> restoreBackup(
   }
 }
 
+ArchiveFile? _resolveReceiptEntry(
+    String receiptPath, Map<String, ArchiveFile> zipEntriesMap) {
+  final norm = p.normalize(receiptPath).replaceAll('\\', '/');
+
+  // 1. Direct exact normalized path match
+  if (zipEntriesMap.containsKey(norm)) {
+    return zipEntriesMap[norm];
+  }
+
+  // 2. Prepend receipts/ if not present
+  final withReceipts = norm.startsWith('receipts/') ? norm : 'receipts/$norm';
+  if (zipEntriesMap.containsKey(withReceipts)) {
+    return zipEntriesMap[withReceipts];
+  }
+
+  // 3. Search by basename
+  final baseName = p.basename(norm);
+  final matches = zipEntriesMap.entries
+      .where((e) => p.basename(e.key) == baseName)
+      .toList();
+
+  if (matches.length == 1) {
+    return matches.first.value;
+  } else if (matches.length > 1) {
+    throw BackupResult(
+      false,
+      'Validation failed: Ambiguous receipt reference "$receiptPath" matches multiple entries in ZIP archive.',
+    );
+  }
+
+  return null;
+}
+
 Future<BackupResult> _restoreFromZipArchive(
   AppDatabase db,
   Archive archive, {
   Directory? targetStorageDir,
   Directory? stagingParentDir,
+  Future<void> Function()? onBeforeDbTransaction,
 }) async {
   if (archive.length > kMaxZipFileCount) {
     return BackupResult(
@@ -303,7 +348,6 @@ Future<BackupResult> _restoreFromZipArchive(
       jsonArchiveFile = file;
     } else {
       zipEntriesMap[normPath] = file;
-      zipEntriesMap[p.basename(normPath)] = file;
     }
   }
 
@@ -348,20 +392,27 @@ Future<BackupResult> _restoreFromZipArchive(
   final projectsJson = data['projects'] as List;
   final transactionsJson = data['transactions'] as List;
 
-  // Validate every referenced receipt image exists in ZIP and is non-empty
+  // Validate and collect unique referenced receipt images from ZIP
+  final referencedEntriesMap = <String, ArchiveFile>{};
+
   for (final t in transactionsJson) {
     final receiptPath = t['receiptImagePath'] as String?;
     if (receiptPath != null && receiptPath.trim().isNotEmpty) {
-      final normReceiptPath = p.normalize(receiptPath).replaceAll('\\', '/');
-      final baseName = p.basename(normReceiptPath);
+      ArchiveFile? entry;
+      try {
+        entry = _resolveReceiptEntry(receiptPath, zipEntriesMap);
+      } catch (e) {
+        if (e is BackupResult) return e;
+        rethrow;
+      }
 
-      final entry = zipEntriesMap[normReceiptPath] ?? zipEntriesMap[baseName];
       if (entry == null) {
         return BackupResult(
           false,
           'Validation failed: Referenced receipt image "$receiptPath" is missing from the ZIP backup archive.',
         );
       }
+
       final entryBytes = entry.content as List<int>;
       if (entryBytes.isEmpty) {
         return BackupResult(
@@ -369,6 +420,9 @@ Future<BackupResult> _restoreFromZipArchive(
           'Validation failed: Referenced receipt image "$receiptPath" inside ZIP is empty (0 bytes).',
         );
       }
+
+      final normEntryPath = p.normalize(entry.name).replaceAll('\\', '/');
+      referencedEntriesMap[normEntryPath] = entry;
     }
   }
 
@@ -380,15 +434,16 @@ Future<BackupResult> _restoreFromZipArchive(
     final stagingParent = stagingParentDir ?? await _safeGetTemporaryDirectory();
     stagingDir = await stagingParent.createTemp('cashbook_restore_staging_');
 
-    final stagedReceiptMap = <String, File>{};
+    final stagedFileMap = <String, File>{};
 
-    for (final entry in zipEntriesMap.entries) {
-      final archiveFile = entry.value;
-      if (archiveFile.isFile && (archiveFile.content as List<int>).isNotEmpty) {
-        final fileName = p.basename(archiveFile.name);
-        final stagedFile = File(p.join(stagingDir.path, fileName));
-        await stagedFile.writeAsBytes(archiveFile.content as List<int>);
-        stagedReceiptMap[entry.key] = stagedFile;
+    for (final entry in referencedEntriesMap.values) {
+      if (entry.isFile && (entry.content as List<int>).isNotEmpty) {
+        final normEntryPath = p.normalize(entry.name).replaceAll('\\', '/');
+        final originalFileName = p.basename(normEntryPath);
+        final stagedFile = File(p.join(
+            stagingDir.path, '${stagedFileMap.length}_$originalFileName'));
+        await stagedFile.writeAsBytes(entry.content as List<int>);
+        stagedFileMap[normEntryPath] = stagedFile;
       }
     }
 
@@ -398,23 +453,26 @@ Future<BackupResult> _restoreFromZipArchive(
       await destDir.create(recursive: true);
     }
 
-    // Copy staged receipts to destination with unique, collision-safe filenames
+    // Copy each unique staged receipt to destination with a collision-safe filename
     final finalReceiptPathsMap = <String, String>{};
 
-    for (final entry in stagedReceiptMap.entries) {
-      final key = entry.key;
+    for (final entry in stagedFileMap.entries) {
+      final normEntryPath = entry.key;
       final stagedFile = entry.value;
 
-      final originalFileName = p.basename(stagedFile.path);
+      final originalFileName = p.basename(normEntryPath);
       final uniqueFileName = _generateUniqueFileName(destDir, originalFileName);
       final destFile = File(p.join(destDir.path, uniqueFileName));
 
       await stagedFile.copy(destFile.path);
       newlyCreatedDestFiles.add(destFile);
 
-      finalReceiptPathsMap[key] = destFile.path;
-      finalReceiptPathsMap[originalFileName] = destFile.path;
-      finalReceiptPathsMap['receipts/$originalFileName'] = destFile.path;
+      finalReceiptPathsMap[normEntryPath] = destFile.path;
+    }
+
+    // Test injection hook before executing DB transaction
+    if (onBeforeDbTransaction != null) {
+      await onBeforeDbTransaction();
     }
 
     // Database atomic swap inside transaction
@@ -443,11 +501,11 @@ Future<BackupResult> _restoreFromZipArchive(
         String? newReceiptPath;
         final relPath = tJson['receiptImagePath'] as String?;
         if (relPath != null && relPath.trim().isNotEmpty) {
-          final normRel = p.normalize(relPath).replaceAll('\\', '/');
-          final baseName = p.basename(normRel);
-          newReceiptPath = finalReceiptPathsMap[normRel] ??
-              finalReceiptPathsMap[baseName] ??
-              finalReceiptPathsMap[relPath];
+          final entry = _resolveReceiptEntry(relPath, zipEntriesMap);
+          if (entry != null) {
+            final normEntryPath = p.normalize(entry.name).replaceAll('\\', '/');
+            newReceiptPath = finalReceiptPathsMap[normEntryPath];
+          }
         }
 
         await db.into(db.transactions).insert(
